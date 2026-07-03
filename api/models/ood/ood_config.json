@@ -1,13 +1,13 @@
 {
-  "threshold": 264.0192565917969,
+  "threshold": 51.78855609893799,
   "class_names": [
-    "benign",
-    "malignant",
-    "precancerous"
+    "melanoma",
+    "nevus",
+    "seborrheic-keratosis"
   ],
   "target_recall": 0.95,
   "model": "Qdrant/clip-ViT-B-32-vision",
   "cov_reg": 1e-06,
-  "pca_n_components": 160,
-  "pca_explained_variance": 0.9613403081893921
+  "pca_n_components": 40,
+  "pca_explained_variance": 0.8474587202072144
 }
