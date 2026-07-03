@@ -40,6 +40,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.LIGHTSAIL_USER }}@${{ secrets.LIGHTSAIL_HOST }} '
             set -e
             cd /skincancer-app/api
+            python3 -m venv venv
             source venv/bin/activate
             pip install -r requirements.txt --quiet
             sudo systemctl restart skincancer-api.service
