@@ -1,5 +1,5 @@
 {
-  "threshold": 63.51261901855469,
+  "threshold": 264.0192565917969,
   "class_names": [
     "benign",
     "malignant",
@@ -8,6 +8,6 @@
   "target_recall": 0.95,
   "model": "Qdrant/clip-ViT-B-32-vision",
   "cov_reg": 1e-06,
-  "pca_n_components": 40,
-  "pca_explained_variance": 0.8195372223854065
+  "pca_n_components": 160,
+  "pca_explained_variance": 0.9613403081893921
 }
