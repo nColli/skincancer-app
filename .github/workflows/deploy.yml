@@ -30,7 +30,7 @@ jobs:
       - name: Sync API code
         run: |
           rsync -avz --delete \
-            --exclude '.git' --exclude '__pycache__' --exclude '.env' \
+            --exclude '.git' --exclude '__pycache__' --exclude 'venv' \
             -e "ssh -i ~/.ssh/deploy_key" \
             ./api/ \
             ${{ secrets.LIGHTSAIL_USER }}@${{ secrets.LIGHTSAIL_HOST }}:/skincancer-app/api/
