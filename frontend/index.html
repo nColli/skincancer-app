@@ -1,10 +1,129 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>My First Webpage</title>
+  <meta charset="UTF-8">
+  <title>Mole Detector</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 1rem; }
+    #drop { border: 2px dashed #888; padding: 3rem; text-align: center; border-radius: 12px; cursor: pointer; }
+    #drop.hover { background: #f0f0f0; }
+    #canvas { max-width: 100%; margin-top: 1rem; border: 1px solid #ddd; }
+    #results { margin-top: 1rem; }
+    .det { padding: 0.5rem; background: #f5f5f5; border-radius: 6px; margin: 0.25rem 0; }
+    .det .coords { display: block; font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
+    .badge {
+      display: inline-block; font-size: 0.75rem; font-weight: 600;
+      padding: 0.1rem 0.5rem; border-radius: 999px; margin-left: 0.5rem;
+    }
+    .badge.ok { background: #e3f8e8; color: #1a7f37; }
+    .badge.ood { background: #fdecea; color: #c0392b; }
+    .badge.merged { background: #eef1ff; color: #3b4ba8; }
+    .det .ood-info { display: block; font-size: 0.8rem; color: #888; margin-top: 0.15rem; }
+  </style>
 </head>
 <body>
-    <h1>Hello World!</h1>
+  <h1>Mole Detector</h1>
+  <div id="drop">Arrastrá una imagen acá o hacé click</div>
+  <input type="file" id="file" accept="image/*" hidden>
+  <canvas id="canvas"></canvas>
+  <div id="results"></div>
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const resultsDiv = document.getElementById('results');
+drop.onclick = () => fileInput.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('hover'); };
+drop.ondragleave = () => drop.classList.remove('hover');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('hover');
+  handleFile(e.dataTransfer.files[0]);
+};
+fileInput.onchange = e => handleFile(e.target.files[0]);
+async function handleFile(file) {
+  if (!file) return;
+  resultsDiv.textContent = 'Procesando...';
+  try {
+    // createImageBitmap con imageOrientation:'from-image' respeta el tag EXIF
+    // de rotacion (clave en fotos de iPhone/Android). new Image() lo ignora,
+    // por eso antes se veia rotado en mobile.
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const fd = new FormData();
+    fd.append('file', file); // mandamos el archivo original, el backend ya hace exif_transpose
+    const res = await fetch('/api/predict', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    drawDetections(data.detections, data.image_size);
+  } catch (err) {
+    resultsDiv.textContent = 'Error: ' + err.message;
+  }
+}
+function drawDetections(dets, imageSize) {
+  // El backend corre YOLO sobre una copia achicada (MAX_SIDE=1280) y devuelve
+  // image_size con las dimensiones de esa copia. El canvas muestra la imagen
+  // a resolucion completa, asi que hay que escalar los bbox proporcionalmente.
+  const scaleX = canvas.width / imageSize.width;
+  const scaleY = canvas.height / imageSize.height;
+  ctx.lineWidth = 3;
+  ctx.font = '20px sans-serif';
+  resultsDiv.innerHTML = '';
+  dets.forEach(d => {
+    const [x1, y1, x2, y2] = d.bbox;
+    const sx1 = x1 * scaleX, sy1 = y1 * scaleY;
+    const sx2 = x2 * scaleX, sy2 = y2 * scaleY;
+
+    // Color del box segun si el recorte cayo fuera de distribucion (OOD).
+    // Sin dato de OOD (por las dudas) se dibuja como "revisar" (amarillo).
+    const isOod = d.ood ? d.ood.is_ood : null;
+    const boxColor = isOod === true ? '#ff3b30' : isOod === false ? '#34c759' : '#ffcc00';
+
+    ctx.strokeStyle = boxColor;
+    ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+    ctx.fillStyle = boxColor;
+    ctx.fillText(`${d.class_name} ${(d.confidence * 100).toFixed(0)}%`, sx1, sy1 - 5);
+
+    const div = document.createElement('div');
+    div.className = 'det';
+
+    const label = document.createElement('span');
+    label.textContent = `${d.class_name} — ${(d.confidence * 100).toFixed(1)}%`;
+    div.appendChild(label);
+
+    if (d.merged_from && d.merged_from > 1) {
+      const mergedBadge = document.createElement('span');
+      mergedBadge.className = 'badge merged';
+      mergedBadge.textContent = `combinado x${d.merged_from}`;
+      div.appendChild(mergedBadge);
+    }
+
+    if (d.ood) {
+      const badge = document.createElement('span');
+      badge.className = `badge ${d.ood.is_ood ? 'ood' : 'ok'}`;
+      badge.textContent = d.ood.is_ood ? 'Fuera de distribución' : 'OK';
+      div.appendChild(badge);
+
+      const oodInfo = document.createElement('span');
+      oodInfo.className = 'ood-info';
+      oodInfo.textContent =
+        `distancia OOD: ${d.ood.ood_distance.toFixed(2)} (umbral: ${d.ood.ood_threshold.toFixed(2)})`;
+      div.appendChild(oodInfo);
+    }
+
+    const coords = document.createElement('span');
+    coords.className = 'coords';
+    coords.textContent =
+      `x1: ${sx1.toFixed(0)}, y1: ${sy1.toFixed(0)}, x2: ${sx2.toFixed(0)}, y2: ${sy2.toFixed(0)}`;
+    div.appendChild(coords);
+
+    resultsDiv.appendChild(div);
+  });
+  if (!dets.length) resultsDiv.textContent = 'No se detectaron objetos.';
+}
+</script>
 </body>
 </html>
