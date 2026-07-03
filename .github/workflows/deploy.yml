@@ -1,0 +1,52 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.LIGHTSAIL_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync frontend
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./frontend/ \
+            ${{ secrets.LIGHTSAIL_USER }}@${{ secrets.LIGHTSAIL_HOST }}:/skincancer-app/frontend/
+
+      - name: Sync API code
+        run: |
+          rsync -avz --delete \
+            --exclude '.git' --exclude '__pycache__' --exclude '.env' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./api/ \
+            ${{ secrets.LIGHTSAIL_USER }}@${{ secrets.LIGHTSAIL_HOST }}:/skincancer-app/api/
+
+      - name: Install deps & restart service
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.LIGHTSAIL_USER }}@${{ secrets.LIGHTSAIL_HOST }} '
+            set -e
+            cd /skincancer-app/api
+            source venv/bin/activate
+            pip install -r requirements.txt --quiet
+            sudo systemctl restart skincancer-api.service
+            sudo systemctl reload nginx
+          '
+
+      - name: Health check
+        run: |
+          sleep 3
+          curl -sf https://skincancer.nicolascolli.com.ar/ -o /dev/null -w "HTTP status: %{http_code}\n"
