@@ -82,7 +82,7 @@ class OODDetector:
     def _mahalanobis(self, z: np.ndarray) -> float:
         diffs = self.centers - z[None, :]  # (K, n_components)
         dists = np.einsum("ij,jk,ik->i", diffs, self.sigma_inv, diffs)
-        return float(np.sqrt(np.maximum(dists.min(), 0.0)))
+        return float(np.maximum(dists.min(), 0.0))
 
     def score(self, crop: Image.Image) -> dict:
         feats = self._extract_features(crop)          # (D_raw,)
