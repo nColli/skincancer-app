@@ -1,8 +1,10 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 from PIL import Image
 import io
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 
 from ood_detector import OODDetector
 
@@ -10,7 +12,7 @@ app = FastAPI(title="Mole Detector API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://mole.nicolascolli.com.ar"],
+    #allow_origins=["*", "https://mole.nicolascolli.com.ar"],
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
@@ -97,13 +99,21 @@ def merge_boxes(detections):
         })
     return merged
 
+templates = Jinja2Templates(directory="../frontend")
 
-@app.get("/health")
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html"
+    )
+
+@app.get("/api/health")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/predict")
+@app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
     if not file.content_type.startswith("image/"):
         raise HTTPException(400, "El archivo debe ser una imagen")
@@ -113,8 +123,8 @@ async def predict(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(400, "No se pudo leer la imagen")
 
-    # imgsz chico = menos RAM. Si tu modelo fue entrenado a 640, dejalo en 640.
-    results = model.predict(image, conf=0.1, imgsz=640, verbose=False)
+    results = model.predict(image, conf=0.01, imgsz=640, verbose=False)
+    #results = model.predict(image, conf=0.01, verbose=False)
     r = results[0]
 
     raw_detections = []
