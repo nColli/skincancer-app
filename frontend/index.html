@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mole Detector</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 1rem; }
@@ -28,6 +29,10 @@
   <canvas id="canvas"></canvas>
   <div id="results"></div>
 <script>
+// Tiene que coincidir con MAX_SIDE en main.py. Si difieren, drawDetections
+// igual corrige por escala, pero conviene mantenerlos iguales.
+const MAX_SIDE = 1280;
+
 const drop = document.getElementById('drop');
 const fileInput = document.getElementById('file');
 const canvas = document.getElementById('canvas');
@@ -41,6 +46,7 @@ drop.ondrop = e => {
   handleFile(e.dataTransfer.files[0]);
 };
 fileInput.onchange = e => handleFile(e.target.files[0]);
+
 async function handleFile(file) {
   if (!file) return;
   resultsDiv.textContent = 'Procesando...';
@@ -49,12 +55,28 @@ async function handleFile(file) {
     // de rotacion (clave en fotos de iPhone/Android). new Image() lo ignora,
     // por eso antes se veia rotado en mobile.
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    ctx.drawImage(bitmap, 0, 0);
+
+    // Dibujamos ya achicado a MAX_SIDE. Dos motivos:
+    //  1) es lo que despues subimos, asi que canvas y backend ven EXACTAMENTE
+    //     los mismos pixeles y no puede haber desfasaje de coordenadas;
+    //  2) un canvas de 4032x3024 son ~48MB en memoria y roza el limite de
+    //     area de canvas de Safari en iOS.
+    const k = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+    canvas.width  = Math.round(bitmap.width  * k);
+    canvas.height = Math.round(bitmap.height * k);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close();
+
+    // Subimos el canvas, no el archivo original: la rotacion EXIF ya quedo
+    // horneada en los pixeles y el peso baja de ~2.4MB a ~200-400kB, que es
+    // lo que evita el 413 de nginx de raiz.
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error('No se pudo procesar la imagen')),
+                    'image/jpeg', 0.9);
+    });
+
     const fd = new FormData();
-    fd.append('file', file); // mandamos el archivo original, el backend ya hace exif_transpose
+    fd.append('file', blob, 'upload.jpg');
     const res = await fetch('/api/predict', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -63,14 +85,22 @@ async function handleFile(file) {
     resultsDiv.textContent = 'Error: ' + err.message;
   }
 }
+
 function drawDetections(dets, imageSize) {
-  // El backend corre YOLO sobre una copia achicada (MAX_SIDE=1280) y devuelve
-  // image_size con las dimensiones de esa copia. El canvas muestra la imagen
-  // a resolucion completa, asi que hay que escalar los bbox proporcionalmente.
+  // Con el flujo actual (subimos el canvas ya achicado) estos factores dan 1.0.
+  // Los dejamos igual: si algun dia MAX_SIDE del backend y del frontend se
+  // desincronizan, o si el backend vuelve a achicar por su cuenta, esto sigue
+  // dibujando bien. Cuesta una multiplicacion por box.
   const scaleX = canvas.width / imageSize.width;
   const scaleY = canvas.height / imageSize.height;
-  ctx.lineWidth = 3;
-  ctx.font = '20px sans-serif';
+
+  // El canvas se muestra a ~350px CSS en un celular pero mide 1280px internos,
+  // asi que un lineWidth fijo de 3 se ve como un pelo. Escalamos con el ancho.
+  const fontSize = Math.max(14, Math.round(canvas.width * 0.03));
+  ctx.lineWidth = Math.max(2, canvas.width * 0.005);
+  ctx.font = `${fontSize}px sans-serif`;
+  ctx.textBaseline = 'alphabetic';
+
   resultsDiv.innerHTML = '';
   dets.forEach(d => {
     const [x1, y1, x2, y2] = d.bbox;
@@ -85,7 +115,10 @@ function drawDetections(dets, imageSize) {
     ctx.strokeStyle = boxColor;
     ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
     ctx.fillStyle = boxColor;
-    ctx.fillText(`${d.class_name} ${(d.confidence * 100).toFixed(0)}%`, sx1, sy1 - 5);
+    // Si la deteccion esta pegada al borde de arriba, sy1-5 se sale del canvas
+    // y el label no se ve. Lo clampeamos.
+    ctx.fillText(`${d.class_name} ${(d.confidence * 100).toFixed(0)}%`,
+                 sx1, Math.max(sy1 - 5, fontSize));
 
     const div = document.createElement('div');
     div.className = 'det';

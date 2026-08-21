@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
-from PIL import Image
+from PIL import Image, ImageOps
 import io
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -21,6 +21,11 @@ model = YOLO("models/yolo/best.pt")
 ood_detector = OODDetector(ood_dir="models/ood")
 
 CONF_THRESHOLD = 0.05  # 5%
+
+# Lado maximo con el que trabajamos. El frontend achica a este mismo valor
+# antes de subir, asi que normalmente esto no hace nada; queda como red de
+# seguridad para clientes que manden la foto original (Postman, app mobile).
+MAX_SIDE = 1280
 
 
 def boxes_intersect(a, b):
@@ -115,16 +120,32 @@ def health():
 
 @app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
+    # content_type puede venir None segun el cliente; sin el "or" esto
+    # explota con AttributeError (500) en vez de devolver el 400.
+    if not (file.content_type or "").startswith("image/"):
         raise HTTPException(400, "El archivo debe ser una imagen")
 
     try:
-        image = Image.open(io.BytesIO(await file.read())).convert("RGB")
+        image = Image.open(io.BytesIO(await file.read()))
+        # PIL NO aplica la rotacion EXIF sola. Sin esto, una foto vertical
+        # de celular llega con width/height invertidos y los bbox salen
+        # transpuestos respecto de lo que ve el usuario en pantalla.
+        # Va antes de convert("RGB") porque convert descarta el bloque EXIF.
+        image = ImageOps.exif_transpose(image)
+        image = image.convert("RGB")
     except Exception:
         raise HTTPException(400, "No se pudo leer la imagen")
 
-    results = model.predict(image, conf=0.01, imgsz=640, verbose=False)
-    #results = model.predict(image, conf=0.01, verbose=False)
+    # Achicamos ACA, antes de detectar, para que los bbox, los crops del OOD
+    # y el image_size de la respuesta hablen todos del mismo tamano.
+    # thumbnail() muta in place y respeta el aspect ratio.
+    if max(image.size) > MAX_SIDE:
+        image.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+
+    # Predecimos directo con el umbral real: antes pedia conf=0.01 y despues
+    # descartaba todo lo <0.05, y esas detecciones de mas solo inflaban n en
+    # merge_boxes (cuyo loop de punto fijo es ~O(n^3) en Python puro).
+    results = model.predict(image, conf=CONF_THRESHOLD, imgsz=640, verbose=False)
     r = results[0]
 
     raw_detections = []
@@ -146,10 +167,19 @@ async def predict(file: UploadFile = File(...)):
         x1, y1, x2, y2 = det["bbox"]
         x1c, y1c = max(0, int(x1)), max(0, int(y1))
         x2c, y2c = min(image.width, int(x2)), min(image.height, int(y2))
+
+        # Un box muy finito puede redondear a ancho/alto 0: crop() devuelve
+        # una imagen vacia y el OOD detector revienta. Lo salteamos.
+        if x2c <= x1c or y2c <= y1c:
+            det["ood"] = None
+            continue
+
         crop = image.crop((x1c, y1c, x2c, y2c))
         det["ood"] = ood_detector.score(crop)
 
     return {
         "detections": merged_detections,
+        # Dimensiones DESPUES de rotar y achicar: es el espacio de
+        # coordenadas en el que estan los bbox de arriba.
         "image_size": {"width": image.width, "height": image.height},
     }
