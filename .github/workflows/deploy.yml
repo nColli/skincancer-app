@@ -49,5 +49,5 @@ jobs:
 
       - name: Health check
         run: |
-          sleep 3
+          sleep 15
           curl -sf https://skincancer.nicolascolli.com.ar/ -o /dev/null -w "HTTP status: %{http_code}\n"
